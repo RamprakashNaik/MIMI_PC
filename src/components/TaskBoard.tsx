@@ -242,6 +242,42 @@ export const TaskBoard: React.FC<{ plan?: TaskPlan | null }> = ({ plan }) => {
                       {task.auditScore}/10
                     </div>
                   )}
+                  {task.alignmentScore !== undefined && (
+                    <div style={{ 
+                      fontSize: '0.65rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '3px',
+                      color: task.alignmentScore >= 0.8 ? 'var(--accent-base)' : '#fbbf24',
+                      background: `${task.alignmentScore >= 0.8 ? 'var(--accent-base)' : '#fbbf24'}15`,
+                      padding: '3px 8px', borderRadius: '100px',
+                      border: `1px solid ${task.alignmentScore >= 0.8 ? 'var(--accent-base)' : '#fbbf24'}30`
+                    }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ width: '10px', height: '10px' }}><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+                      {Math.round(task.alignmentScore * 100)}%
+                    </div>
+                  )}
+                  {task.confidence !== undefined && (
+                    <div style={{ 
+                      fontSize: '0.65rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '3px',
+                      color: task.confidence >= 0.9 ? '#06b6d4' : (task.confidence < 0.7 ? '#fbbf24' : '#6366f1'),
+                      background: `${task.confidence >= 0.9 ? '#06b6d4' : (task.confidence < 0.7 ? '#fbbf24' : '#6366f1')}15`,
+                      padding: '3px 8px', borderRadius: '100px',
+                      border: `1px solid ${task.confidence >= 0.9 ? '#06b6d4' : (task.confidence < 0.7 ? '#fbbf24' : '#6366f1')}30`
+                    }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" style={{ width: '10px', height: '10px' }}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                      {Math.round(task.confidence * 100)}%
+                    </div>
+                  )}
+                  {task.usage && (
+                    <div style={{ 
+                      fontSize: '0.65rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '3px',
+                      color: 'var(--text-tertiary)',
+                      background: 'var(--bg-surface)',
+                      padding: '3px 8px', borderRadius: '100px',
+                      border: '1px solid var(--border-light)'
+                    }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width: '10px', height: '10px' }}><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>
+                      {((task.usage.promptTokens + task.usage.completionTokens) / 1000).toFixed(1)}k
+                    </div>
+                  )}
                   {task.agentRole && (
                     <div style={{ 
                       fontSize: '0.6rem', fontWeight: 900, textTransform: 'uppercase', 

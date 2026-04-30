@@ -1489,6 +1489,10 @@ export default function Home() {
   }, [isResizing]);
 
   const generateTitleForChat = async (chatId: string, userMessage: string, provider: Provider, modelId: string) => {
+    // Safety check: Don't rename if it's already named
+    const chatToRename = chats.find(c => c.id === chatId);
+    if (chatToRename && chatToRename.title !== "New Chat") return;
+
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (provider.apiKey) headers["Authorization"] = `Bearer ${provider.apiKey}`;
@@ -1507,12 +1511,21 @@ export default function Home() {
         })
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn(`Auto-titler failed with status ${res.status}`);
+        return;
+      }
       
       const data = await res.json();
-      let generatedTitle = data.choices[0]?.message?.content?.replace(/["']/g, "")?.trim();
+      const rawTitle = data.choices?.[0]?.message?.content || data.candidates?.[0]?.content?.parts?.[0]?.text;
+      let generatedTitle = rawTitle?.replace(/["']/g, "")?.trim();
       
       if (generatedTitle) {
+        // Enforce 3-4 word limit just in case the AI was talkative
+        const words = generatedTitle.split(" ");
+        if (words.length > 5) {
+          generatedTitle = words.slice(0, 4).join(" ") + "...";
+        }
         renameChat(chatId, generatedTitle);
       }
     } catch (e) {
@@ -1535,6 +1548,15 @@ export default function Home() {
 
     addLog(`Starting execution for goal: "${runningPlan.goal}"`);
     addLog(`Strategy: ${runningPlan.strategy?.reason || "Sequential execution"}`);
+
+    // --- TITLE FORCE: Rename chat immediately (STALE-STATE PROOF) ---
+    const activeProvider = providers.find(p => p.id === selectedProviderId);
+    if (activeProvider) {
+      generateTitleForChat(chatId, runningPlan.goal, activeProvider, selectedModelId)
+        .catch(e => console.warn("Orchestrator title force failed:", e));
+    }
+
+    let totalTokens = 0;
 
     for (let i = 0; i < runningPlan.tasks.length; i++) {
       const task = runningPlan.tasks[i];
@@ -1617,6 +1639,12 @@ export default function Home() {
                 if (briefRes.ok) {
                   const briefData = await briefRes.json();
                   result = briefData.choices[0]?.message?.content || "Handoff summary generated.";
+                  structuredResult = { 
+                    usage: { 
+                      promptTokens: briefData.usage?.prompt_tokens || 0, 
+                      completionTokens: briefData.usage?.completion_tokens || 0 
+                    } 
+                  };
                   break;
                 }
               } catch (e) {
@@ -1633,20 +1661,84 @@ export default function Home() {
         taskOutputs.push(`TASK: ${task.description}\nRESULT: ${result || "No data found."}`);
         
         const finalTaskResult = structuredResult || result;
-        updateTask(task.id, { status: 'completed', result: finalTaskResult });
-        addLog(`Task ${task.id} completed successfully.`);
         
-        runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'completed', result: finalTaskResult } : t) };
+        // --- REAL-TIME ALIGNMENT & CONFIDENCE AUDIT ---
+        let alignmentScore = 1.0;
+        let confidenceScore = 1.0;
+        let auditUsage = { promptTokens: 0, completionTokens: 0 };
+        const activeProvider = providers.find(p => p.id === selectedProviderId);
+        if (activeProvider && task.tool !== 'handoff') {
+          try {
+            const alignRes = await universalFetch(`${activeProvider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(activeProvider.apiKey ? { "Authorization": `Bearer ${activeProvider.apiKey}` } : {}) },
+              body: JSON.stringify({
+                model: selectedModelId,
+                messages: [
+                  { role: "system", content: "You are a Quality Auditor. Audit the TASK RESULT against the GOAL. Return a JSON object: { \"alignment\": number (0-1), \"confidence\": number (0-1) }. Alignment is how well it matches the goal. Confidence is how likely the answer is 100% correct without hallucinations." },
+                  { role: "user", content: `GOAL: ${runningPlan.goal}\nTASK: ${task.description}\nRESULT: ${result?.toString().substring(0, 1000)}` }
+                ],
+                temperature: 0,
+                response_format: { type: "json_object" }
+              })
+            });
+            if (alignRes.ok) {
+              const auditData = await alignRes.json();
+              const audit = JSON.parse(auditData?.choices[0]?.message?.content || "{}");
+              alignmentScore = audit.alignment || 1.0;
+              confidenceScore = audit.confidence || 1.0;
+              auditUsage = { 
+                promptTokens: auditData.usage?.prompt_tokens || 0, 
+                completionTokens: auditData.usage?.completion_tokens || 0 
+              };
+            }
+          } catch (e) { console.warn("Confidence audit failed."); }
+        }
+
+        const taskUsage = {
+          promptTokens: (structuredResult?.usage?.promptTokens || 0) + auditUsage.promptTokens,
+          completionTokens: (structuredResult?.usage?.completionTokens || 0) + auditUsage.completionTokens
+        };
+        totalTokens += (taskUsage.promptTokens + taskUsage.completionTokens);
+
+        updateTask(task.id, { 
+          status: 'completed', 
+          result: finalTaskResult, 
+          alignmentScore,
+          confidence: confidenceScore,
+          usage: taskUsage.promptTokens > 0 ? taskUsage : undefined
+        });
+        addLog(`Task ${task.id} completed. Alignment: ${alignmentScore}. Confidence: ${confidenceScore}`);
+        
+        if (confidenceScore < 0.7) {
+          addLog(`[QUALITY WARNING] Low confidence detected (${confidenceScore}). Reviewer audit is recommended.`);
+        }
+
+        runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'completed', result: finalTaskResult, alignmentScore, confidence: confidenceScore, usage: taskUsage.promptTokens > 0 ? taskUsage : undefined } : t) };
         updateMessagePlan(chatId, userMessage.id, runningPlan);
         
       } catch (err: any) {
         console.error(`Task ${task.id} failed:`, err);
-        const errorMsg = err.name === 'AbortError' ? "Task timed out after 45s." : (err.message || "Unknown error");
-        updateTask(task.id, { status: 'failed', result: errorMsg });
-        addLog(`Task ${task.id} failed: ${errorMsg}`);
-        runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'failed', result: errorMsg } : t) };
+        const isTimeout = err.name === 'AbortError';
+        const errorMsg = isTimeout ? "Task timed out after 45s." : (err.message || "Unknown error");
+        
+        // Smart Classification
+        let category: 'timeout' | 'data' | 'system' | 'logic' = 'system';
+        if (isTimeout) category = 'timeout';
+        else if (task.tool === 'search' || task.tool === 'gmail') category = 'data';
+        else if (task.tool === 'handoff') category = 'logic';
+
+        updateTask(task.id, { 
+          status: 'failed', 
+          result: errorMsg, 
+          failureCategory: category,
+          failureReason: errorMsg 
+        });
+        addLog(`Task ${task.id} failed [Category: ${category.toUpperCase()}]: ${errorMsg}`);
+        
+        runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'failed', result: errorMsg, failureCategory: category, failureReason: errorMsg } : t) };
         updateMessagePlan(chatId, userMessage.id, runningPlan);
-        taskOutputs.push(`TASK: ${task.description}\nFAILED: ${errorMsg}`);
+        taskOutputs.push(`TASK: ${task.description}\nFAILED [${category.toUpperCase()}]: ${errorMsg}`);
       }
     }
 
@@ -1813,6 +1905,16 @@ export default function Home() {
         setPlan(skeletonPlan); // Clear stale plan state immediately
         addMessage(targetChatId, userMessage);
         setActiveContext(targetChatId, userMessage.id);
+        
+        // --- FIX: Trigger Auto-Title if name is still 'New Chat' (SILENT BACKGROUND) ---
+        const needsTitle = !activeChat || activeChat.title === "New Chat";
+        if (needsTitle && !isRegenerating) {
+          // Fire and forget to avoid 504/blocking
+          setTimeout(() => {
+            generateTitleForChat(targetChatId, textToSend, activeProvider, selectedModelId)
+              .catch(e => console.warn("Background titler failed:", e));
+          }, 100);
+        }
         
         if (overrideInput === undefined) {
           setInput("");

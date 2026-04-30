@@ -14,6 +14,14 @@ export interface Task {
   agentRole?: TaskRole;
   auditScore?: number;
   auditStatus?: string;
+  alignmentScore?: number;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+  };
+  failureCategory?: 'logic' | 'data' | 'system' | 'timeout';
+  failureReason?: string;
+  confidence?: number;
 }
 
 export interface TaskPlan {
