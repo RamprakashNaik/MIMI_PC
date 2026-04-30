@@ -7,16 +7,24 @@ export type TaskRole = 'researcher' | 'coder' | 'analyst' | 'reviewer' | 'planni
 
 export interface Task {
   id: string;
-  tool: 'gmail' | 'search' | 'memory' | 'files' | 'final_answer' | 'planning';
+  tool: 'gmail' | 'search' | 'memory' | 'files' | 'final_answer' | 'planning' | 'handoff';
   description: string;
   status: 'pending' | 'executing' | 'completed' | 'failed';
   result?: any;
   agentRole?: TaskRole;
+  auditScore?: number;
+  auditStatus?: string;
 }
 
 export interface TaskPlan {
   goal: string;
+  strategy?: {
+    agents: string[];
+    reason: string;
+    complexity: 'low' | 'medium' | 'high';
+  };
   tasks: Task[];
+  logs?: string[];
 }
 
 interface AgentContextType {
@@ -30,6 +38,7 @@ interface AgentContextType {
   setIsExecuting: (val: boolean) => void;
   setActiveContext: (chatId: string | null, messageId: string | null) => void;
   updateTask: (taskId: string, updates: Partial<Task>) => void;
+  addLog: (log: string) => void;
   resetAgent: () => void;
 }
 
@@ -103,6 +112,18 @@ export const AgentProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     });
   }, []);
 
+  const addLog = useCallback((log: string) => {
+    setCurrentPlan(prev => {
+      if (!prev) return null;
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      const newLog = `[${timestamp}] ${log}`;
+      return {
+        ...prev,
+        logs: [...(prev.logs || []), newLog]
+      };
+    });
+  }, []);
+
   const resetAgent = useCallback(() => {
     setCurrentPlan(null);
     setIsPlanning(false);
@@ -123,6 +144,7 @@ export const AgentProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsExecuting,
       setActiveContext,
       updateTask,
+      addLog,
       resetAgent
     }}>
       {children}

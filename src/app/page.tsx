@@ -1082,7 +1082,7 @@ export default function Home() {
   } = useChat();
   const { queryMemories, addMemory, memories, isRecalling } = useMemory();
   const { 
-    currentPlan, setPlan, updateTask, resetAgent, 
+    currentPlan, setPlan, updateTask, addLog, resetAgent, 
     isExecuting, isPlanning, setIsPlanning, setIsExecuting,
     activeChatId: agentChatId, activeMessageId: agentMsgId, setActiveContext
   } = useAgent();
@@ -1520,7 +1520,7 @@ export default function Home() {
     }
   };
 
-  const executeAgentPlan = async (initialPlan: TaskPlan, chatId: string, userMessage: Message) => {
+  const executeAgentPlan = async (initialPlan: TaskPlan, chatId: string, userMessage: Message, retryCount = 0) => {
     setPlan(initialPlan);
     setIsExecuting(true);
     setActiveContext(chatId, userMessage.id);
@@ -1528,17 +1528,28 @@ export default function Home() {
     const taskOutputs: string[] = [];
     let runningPlan = { ...initialPlan };
 
-    for (const task of runningPlan.tasks) {
+    // Update the task plan with reasoning if available
+    if (runningPlan.reasoning) {
+      updateMessagePlan(chatId, userMessage.id, runningPlan);
+    }
+
+    addLog(`Starting execution for goal: "${runningPlan.goal}"`);
+    addLog(`Strategy: ${runningPlan.strategy?.reason || "Sequential execution"}`);
+
+    for (let i = 0; i < runningPlan.tasks.length; i++) {
+      const task = runningPlan.tasks[i];
       if (task.tool === 'final_answer') continue;
 
       updateTask(task.id, { status: 'executing' });
+      addLog(`[Agent: ${task.agentRole?.toUpperCase()}] Executing tool: ${task.tool}`);
+      addLog(`Description: ${task.description}`);
       runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'executing' } : t) };
       updateMessagePlan(chatId, userMessage.id, runningPlan);
       
       let result = "";
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 45000); // Increased timeout to 45s for complex tasks
 
         let structuredResult: any = null;
 
@@ -1582,6 +1593,38 @@ export default function Home() {
               result = "No files attached to analyze.";
             }
             break;
+          case 'handoff':
+            // The 'handoff' tool uses the current context to summarize findings for the next agent.
+            // If we have an active provider, we can use it to create a "Briefing"
+            const activeProvider = providers.find(p => p.id === selectedProviderId);
+            if (activeProvider) {
+              try {
+                const briefRes = await universalFetch(`${activeProvider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+                  method: "POST",
+                  headers: { 
+                    "Content-Type": "application/json",
+                    ...(activeProvider.apiKey ? { "Authorization": `Bearer ${activeProvider.apiKey}` } : {})
+                  },
+                  body: JSON.stringify({
+                    model: selectedModelId,
+                    messages: [
+                      { role: "system", content: `You are the ${task.agentRole?.toUpperCase() || 'AGENT'}. Your task is: ${task.description}. Summarize the previous findings into a clean briefing for the next agent.` },
+                      { role: "user", content: `PREVIOUS FINDINGS:\n${taskOutputs.join("\n\n---\n\n")}` }
+                    ],
+                    temperature: 0
+                  })
+                });
+                if (briefRes.ok) {
+                  const briefData = await briefRes.json();
+                  result = briefData.choices[0]?.message?.content || "Handoff summary generated.";
+                  break;
+                }
+              } catch (e) {
+                console.warn("Handoff summary failed, using raw context.");
+              }
+            }
+            result = `[Handoff] Consolidated data from previous steps: ${taskOutputs.length} inputs gathered.`;
+            break;
           default:
             result = `Unknown tool: ${task.tool}`;
         }
@@ -1591,24 +1634,98 @@ export default function Home() {
         
         const finalTaskResult = structuredResult || result;
         updateTask(task.id, { status: 'completed', result: finalTaskResult });
+        addLog(`Task ${task.id} completed successfully.`);
+        
         runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'completed', result: finalTaskResult } : t) };
         updateMessagePlan(chatId, userMessage.id, runningPlan);
         
       } catch (err: any) {
         console.error(`Task ${task.id} failed:`, err);
-        const errorMsg = err.name === 'AbortError' ? "Task timed out after 30s." : (err.message || "Unknown error");
+        const errorMsg = err.name === 'AbortError' ? "Task timed out after 45s." : (err.message || "Unknown error");
         updateTask(task.id, { status: 'failed', result: errorMsg });
+        addLog(`Task ${task.id} failed: ${errorMsg}`);
         runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === task.id ? { ...t, status: 'failed', result: errorMsg } : t) };
         updateMessagePlan(chatId, userMessage.id, runningPlan);
         taskOutputs.push(`TASK: ${task.description}\nFAILED: ${errorMsg}`);
       }
     }
 
-    // After all tasks are done, send the final synthesized prompt
+    // After all tasks are done, perform a Strategy Review
     const finalTask = runningPlan.tasks.find(t => t.tool === 'final_answer');
     const isReviewMode = finalTask?.agentRole === 'reviewer';
-    
     const finalContext = taskOutputs.join("\n\n---\n\n");
+
+    // ── ORCHESTRATOR UPGRADE: Self-Correction Loop with Scoring ──
+    if (isReviewMode) {
+      const activeProvider = providers.find(p => p.id === selectedProviderId);
+      if (activeProvider) {
+        addLog("Reviewer initiating Quality Audit...");
+        console.log("MIMI: Reviewer performing Quality Audit...");
+        try {
+          const auditRes = await universalFetch(`${activeProvider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              ...(activeProvider.apiKey ? { "Authorization": `Bearer ${activeProvider.apiKey}` } : {})
+            },
+            body: JSON.stringify({
+              model: selectedModelId,
+              messages: [
+                { role: "system", content: "You are the Quality Control Reviewer. Audit the following tool outputs against the GOAL. Return a JSON object: { \"score\": number (1-10), \"approved\": boolean, \"issues\": string[] }. If score < 8, approved MUST be false." },
+                { role: "user", content: `GOAL: ${runningPlan.goal}\n\nOUTPUTS:\n${finalContext}` }
+              ],
+              stream: false,
+              temperature: 0,
+              response_format: { type: "json_object" }
+            })
+          });
+
+          if (auditRes.ok) {
+            const auditData = await auditRes.json();
+            const audit = JSON.parse(auditData.choices[0]?.message?.content || "{}");
+            
+            // Update the final task with the audit stats
+            if (finalTask) {
+              updateTask(finalTask.id, { auditScore: audit.score, auditStatus: audit.approved ? 'Passed' : 'Needs Correction' });
+              runningPlan = { ...runningPlan, tasks: runningPlan.tasks.map(t => t.id === finalTask.id ? { ...t, auditScore: audit.score, auditStatus: audit.approved ? 'Passed' : 'Needs Correction' } : t) };
+            }
+
+            if (audit.approved === false || (audit.score !== undefined && audit.score < 8)) {
+              addLog(`Audit Score: ${audit.score}/10 - Quality threshold not met.`);
+              // --- SAFETY GUARD: Prevent Task Explosion ---
+              if (retryCount >= 3 || runningPlan.tasks.length > 10) {
+                addLog("Safety Guard: Maximum retries reached. Forcing final synthesis.");
+                console.warn("MIMI: Max retries or task limit reached. Skipping further corrections.");
+              } else {
+                addLog(`Injecting Correction Task (Attempt ${retryCount + 1})...`);
+                console.log(`MIMI: Quality Audit Failed (Score: ${audit.score}). Injecting correction (Retry ${retryCount + 1})...`);
+                const feedback = audit.issues?.join("; ") || "Insufficient quality detected by Reviewer.";
+                
+                const correctionTask: Task = {
+                  id: `correction-${Date.now()}`,
+                  tool: 'search',
+                  description: `Correction [Score ${audit.score}/10]: ${feedback}`,
+                  status: 'pending',
+                  agentRole: 'researcher'
+                };
+                
+                const finalIdx = runningPlan.tasks.findIndex(t => t.tool === 'final_answer');
+                runningPlan.tasks.splice(finalIdx, 0, correctionTask);
+                
+                setPlan({ ...runningPlan });
+                updateMessagePlan(chatId, userMessage.id, runningPlan);
+                return executeAgentPlan(runningPlan, chatId, userMessage, retryCount + 1);
+              }
+            } else {
+              addLog(`Audit Score: ${audit.score}/10 - Quality check passed.`);
+            }
+          }
+        } catch (e) {
+          console.warn("Audit failed, proceeding to synthesis anyway.", e);
+        }
+      }
+    }
+
     setIsExecuting(false);
     
     // Sync final plan to history
@@ -1658,23 +1775,29 @@ export default function Home() {
     const messages = activeChat ? activeChat.messages : [];
     
     // --- AGENTIC PLANNING TRIGGER ---
+    // If agentContext is present, it means we are in a synthesis phase, so skip planning.
     if (!agentContext && !isRegenerating) {
       const complexKeywords = [
         "search", "email", "gmail", "remember", "check", "find", "analyze", "summarize", "draft",
         "current", "latest", "price", "value", "rate", "today", "now", "news", "weather", "stock",
-        "exchange", "who is", "what is", "whats", "how much"
+        "exchange", "who is", "what is", "whats", "how much", "how many", "who was", "where is", "when"
       ];
-      const isComplex = textToSend.split(/\s+/).length > 10 || complexKeywords.some(k => textToSend.toLowerCase().includes(k));
+      const isComplex = textToSend.split(/\s+/).length > 8 || complexKeywords.some(k => textToSend.toLowerCase().includes(k));
       
       if (isComplex) {
         // --- OPTIMISTIC UI: Add message with skeleton plan immediately ---
         const userId = Date.now().toString() + Math.random().toString();
         const skeletonPlan: TaskPlan = {
           goal: textToSend,
+          strategy: {
+            agents: ['Lead Orchestrator'],
+            reason: 'Architecting dynamic execution plan...',
+            complexity: 'low'
+          },
           tasks: [{ 
             id: 'planning-step', 
             tool: 'planning', 
-            description: 'Architecting execution plan...', 
+            description: 'Analyzing request complexity...', 
             status: 'executing' 
           }]
         };
@@ -1687,6 +1810,7 @@ export default function Home() {
           agentPlan: skeletonPlan
         };
         
+        setPlan(skeletonPlan); // Clear stale plan state immediately
         addMessage(targetChatId, userMessage);
         setActiveContext(targetChatId, userMessage.id);
         
@@ -1695,7 +1819,6 @@ export default function Home() {
           if (textareaRef.current) textareaRef.current.style.height = 'auto';
         }
         setPendingAttachments([]);
-        // ----------------------------------------------------------------
 
         if (!selectedModelId) {
           console.warn("No model selected, skipping planning.");
@@ -1704,6 +1827,7 @@ export default function Home() {
 
         setIsPlanning(true);
 
+        let alreadyAdded = false;
         try {
           const planRes = await fetch("/api/agent/plan", {
             method: "POST",
@@ -1716,17 +1840,27 @@ export default function Home() {
             console.warn("Planning API returned error:", errorText);
             throw new Error(`Planning failed: ${planRes.status}`);
           }
-            const plan = await planRes.json();
-            if (plan.tasks && plan.tasks.length > 1) {
-              // Update the previously added message with the real plan
-              updateMessagePlan(targetChatId, userId, plan);
-              await executeAgentPlan(plan, targetChatId, userMessage);
-              return;
-            }
+          const plan = await planRes.json();
+          
+          if (plan.tasks && plan.tasks.length > 1) {
+            updateMessagePlan(targetChatId, userId, plan);
+            await executeAgentPlan(plan, targetChatId, userMessage);
+            return;
+          } else {
+            updateMessagePlan(targetChatId, userId, null);
+            alreadyAdded = true;
+            console.log("MIMI: Orchestrator chose Direct Mode for simple request.");
+          }
         } catch (err) {
           console.warn("Planning failed, falling back to direct mode:", err);
+          updateMessagePlan(targetChatId, userId, null);
+          alreadyAdded = true;
         } finally {
           setIsPlanning(false);
+          if (alreadyAdded) {
+            setPlan(null); // Force clear the TaskBoard skeleton for Direct Mode
+            return sendMessage(textToSend, isRegenerating, targetChatId, "DIRECT_FALLBACK");
+          }
         }
       }
     }
@@ -1748,6 +1882,10 @@ export default function Home() {
         if (textareaRef.current) textareaRef.current.style.height = 'auto';
       }
     }
+    
+    // Internal guard to handle the recursive call without duplicating messages
+    const finalContext = agentContext === "DIRECT_FALLBACK" ? undefined : agentContext;
+    if (agentContext === "DIRECT_FALLBACK") setPlan(null); // Redundant safety
     
     setTypingChatIds(prev => ({ ...prev, [targetChatId!]: true }));
 

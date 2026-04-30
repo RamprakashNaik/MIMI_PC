@@ -15,6 +15,7 @@
   --text-tertiary: #8e7b6c;
 
   --accent-base: #e68a45;
+  --accent-rgb: 230, 138, 69;
   --accent-glow: rgba(230, 138, 69, 0.3);
   --accent-gradient: linear-gradient(135deg, #e68a45 0%, #f4a460 50%, #ffd2a0 100%);
   --logo-gradient: linear-gradient(135deg, #e68a45 0%, #fff5e1 100%);
@@ -37,6 +38,7 @@
   --bg-surface-elevated: #141b26;
   --bg-glass: rgba(12, 17, 26, 0.6);
   --accent-base: #3b82f6;
+  --accent-rgb: 59, 130, 246;
   --accent-glow: rgba(59, 130, 246, 0.3);
   --accent-gradient: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   --border-light: rgba(59, 130, 246, 0.12);
@@ -55,6 +57,7 @@
   --bg-surface-elevated: #131f14;
   --bg-glass: rgba(11, 20, 12, 0.6);
   --accent-base: #10b981;
+  --accent-rgb: 16, 185, 129;
   --accent-glow: rgba(16, 185, 129, 0.3);
   --accent-gradient: linear-gradient(135deg, #10b981 0%, #059669 100%);
   --border-light: rgba(16, 185, 129, 0.12);
@@ -73,6 +76,7 @@
   --bg-surface-elevated: #1b1326;
   --bg-glass: rgba(18, 12, 26, 0.6);
   --accent-base: #8b5cf6;
+  --accent-rgb: 139, 92, 246;
   --accent-glow: rgba(139, 92, 246, 0.3);
   --accent-gradient: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   --border-light: rgba(139, 92, 246, 0.12);

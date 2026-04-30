@@ -7,10 +7,19 @@ import { openLink } from '@/lib/api';
 export const TaskBoard: React.FC<{ plan?: TaskPlan | null }> = ({ plan }) => {
   const { currentPlan: activePlan } = useAgent();
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [showTrace, setShowTrace] = useState(false);
   
   const displayPlan = plan !== undefined ? plan : activePlan;
 
   if (!displayPlan) return null;
+
+  const getComplexityColor = (level: string) => {
+    switch (level?.toLowerCase()) {
+      case 'high': return '#ef4444';
+      case 'medium': return '#fbbf24';
+      default: return '#22c55e';
+    }
+  };
 
   const getStatusIcon = (status: Task['status']) => {
     switch (status) {
@@ -130,7 +139,61 @@ export const TaskBoard: React.FC<{ plan?: TaskPlan | null }> = ({ plan }) => {
           <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>Execution Plan</h4>
           <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>Autonomous Agent Mode Active</p>
         </div>
+        <button 
+          onClick={() => setShowTrace(!showTrace)}
+          style={{ 
+            padding: '4px 10px', fontSize: '0.65rem', fontWeight: 800, textTransform: 'uppercase',
+            background: showTrace ? 'var(--accent-base)' : 'var(--bg-surface-elevated)',
+            color: showTrace ? '#fff' : 'var(--text-secondary)',
+            border: '1px solid var(--border-light)', borderRadius: '6px', cursor: 'pointer',
+            transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '4px'
+          }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width: '10px', height: '10px' }}><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          Trace
+        </button>
       </div>
+
+      {displayPlan.strategy && (
+        <div style={{ 
+          background: 'var(--bg-deep)', 
+          border: '1px solid var(--border-light)', 
+          borderRadius: '1rem', 
+          padding: '1rem', 
+          marginBottom: '1.25rem',
+          boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {displayPlan.strategy.agents?.map((agent, idx) => (
+                <span key={idx} style={{ 
+                  fontSize: '0.65rem', fontWeight: 800, textTransform: 'uppercase', 
+                  color: 'var(--text-secondary)', background: 'var(--bg-surface-elevated)', 
+                  padding: '2px 8px', borderRadius: '100px', border: '1px solid var(--border-light)',
+                  letterSpacing: '0.02em'
+                }}>
+                  {agent}
+                </span>
+              ))}
+            </div>
+            <div style={{ 
+              fontSize: '0.65rem', fontWeight: 900, textTransform: 'uppercase', 
+              color: getComplexityColor(displayPlan.strategy.complexity),
+              background: `${getComplexityColor(displayPlan.strategy.complexity)}15`,
+              padding: '2px 10px', borderRadius: '100px',
+              border: `1px solid ${getComplexityColor(displayPlan.strategy.complexity)}40`
+            }}>
+              {displayPlan.strategy.complexity || 'LOW'} Complexity
+            </div>
+          </div>
+          <div style={{ 
+            fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5, fontStyle: 'italic'
+          }}>
+            <span style={{ fontWeight: 800, color: 'var(--accent-base)', marginRight: '0.5rem', fontStyle: 'normal' }}>STRATEGY:</span>
+            {displayPlan.strategy.reason}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {displayPlan.tasks.map((task, i) => {
@@ -167,14 +230,26 @@ export const TaskBoard: React.FC<{ plan?: TaskPlan | null }> = ({ plan }) => {
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {task.auditScore !== undefined && (
+                    <div style={{ 
+                      fontSize: '0.65rem', fontWeight: 900, display: 'flex', alignItems: 'center', gap: '3px',
+                      color: task.auditScore >= 8 ? '#22c55e' : '#ef4444',
+                      background: `${task.auditScore >= 8 ? '#22c55e' : '#ef4444'}15`,
+                      padding: '3px 8px', borderRadius: '100px',
+                      border: `1px solid ${task.auditScore >= 8 ? '#22c55e' : '#ef4444'}30`
+                    }}>
+                      <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: '10px', height: '10px' }}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                      {task.auditScore}/10
+                    </div>
+                  )}
                   {task.agentRole && (
                     <div style={{ 
                       fontSize: '0.6rem', fontWeight: 900, textTransform: 'uppercase', 
                       color: task.agentRole === 'reviewer' ? '#fbbf24' : 'var(--accent-base)', 
-                      background: 'rgba(251, 191, 36, 0.1)', 
+                      background: `${task.agentRole === 'reviewer' ? '#fbbf24' : 'var(--accent-base)'}15`, 
                       padding: '2px 6px', borderRadius: '4px',
                       letterSpacing: '0.05em',
-                      border: `1px solid ${task.agentRole === 'reviewer' ? 'rgba(251, 191, 36, 0.3)' : 'var(--accent-glow)'}`
+                      border: `1px solid ${task.agentRole === 'reviewer' ? '#fbbf24' : 'var(--accent-glow)'}30`
                     }}>
                       {task.agentRole}
                     </div>
@@ -211,6 +286,34 @@ export const TaskBoard: React.FC<{ plan?: TaskPlan | null }> = ({ plan }) => {
           );
         })}
       </div>
+
+      {showTrace && displayPlan.logs && (
+        <div style={{ 
+          marginTop: '1.5rem', 
+          padding: '1rem', 
+          background: '#0a0a0a', 
+          borderRadius: '0.75rem', 
+          border: '1px solid var(--border-light)',
+          fontFamily: 'JetBrains Mono, monospace',
+          boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)'
+        }}>
+          <div style={{ fontSize: '0.65rem', color: '#666', marginBottom: '0.75rem', fontWeight: 800, textTransform: 'uppercase', display: 'flex', justifyContent: 'space-between' }}>
+            <span>System Execution Trace</span>
+            <span>Live Output</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {displayPlan.logs.map((log, idx) => (
+              <div key={idx} style={{ fontSize: '0.75rem', color: '#d1d1d1', lineHeight: 1.4 }}>
+                <span style={{ color: 'var(--accent-base)', marginRight: '8px' }}>›</span>
+                {log}
+              </div>
+            ))}
+            {displayPlan.logs.length === 0 && (
+              <div style={{ fontSize: '0.75rem', color: '#444' }}>No trace logs available yet.</div>
+            )}
+          </div>
+        </div>
+      )}
       
       <style jsx>{`
         .task-row-hover:hover {
